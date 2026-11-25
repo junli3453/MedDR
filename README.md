@@ -1,7 +1,6 @@
 <div align="center">
 
-<h1>MedDR</h1>
-<h2>Causality-Guided Proactive Research Agents<br>for Personalized Medication Recommendation</h2>
+<h1>Causality-Guided Proactive Research Agents<br>for Personalized Medication Recommendation</h1>
 
 <p><strong>
   Xiaoyan Zhao<sup>1</sup>, Xiang Li<sup>2</sup>, Zipeng Zhan<sup>2</sup>, Chunyuan Zheng<sup>2</sup>,<br>
