@@ -1,22 +1,28 @@
-<h2 align="center">MedDR: Causality-Guided Proactive Research Agents for Personalized Medication Recommendation</h2>
+<div align="center">
 
-<p align="center">
+<h1>MedDR</h1>
+<h2>Causality-Guided Proactive Research Agents<br>for Personalized Medication Recommendation</h2>
+
+<p><strong>
   Xiaoyan Zhao<sup>1</sup>, Xiang Li<sup>2</sup>, Zipeng Zhan<sup>2</sup>, Chunyuan Zheng<sup>2</sup>,<br>
   Yang Zhang<sup>1,&dagger;</sup>, Weihao Liu<sup>3</sup>, Haoxuan Li<sup>2,&dagger;</sup>, Tat-Seng Chua<sup>1</sup>
+</strong></p>
+
+<p>
+  <sup>1</sup>National University of Singapore &nbsp;&nbsp;
+  <sup>2</sup>Peking University &nbsp;&nbsp;
+  <sup>3</sup>Renmin University of China
 </p>
 
-<p align="center">
-  <sup>1</sup>National University of Singapore<br>
-  <sup>2</sup>Peking University<br>
-  <sup>3</sup>Renmin University of China<br>
-  <sup>&dagger;</sup>Corresponding authors
-</p>
+<p><sup>&dagger;</sup>Corresponding authors</p>
+
+</div>
 
 ## Abstract
 
 Medication recommendation aims to support accurate, safe, and personalized prescribing from electronic health records. Existing retrieval-augmented approaches often select evidence by semantic relevance rather than its utility for resolving medication uncertainty. MedDR reformulates this task as proactive deep research: a Planner develops patient-specific research objectives, a Questioner iteratively requests decision-relevant evidence from a frozen Retriever, and a Reporter updates uncertain medication recommendations under drug-drug interaction constraints. Counterfactual evidence interventions estimate the contribution of each research step through a necessity-and-sufficiency-inspired reward, which trains the Questioner with group relative policy optimization. The framework combines frozen deep-model predictions with evidence-grounded, personalized decision refinement.
 
-The repository includes MedDR and a SafeDrug implementation. Datasets and pretrained weights are not included. For research use only.
+MedDR operates on frozen deep-model medication probabilities. A SafeDrug baseline implementation is included. Datasets and pretrained weights are not distributed. For research use only.
 
 ## Framework
 
@@ -69,6 +75,8 @@ python -m pip install -e .
 
 The Planner, Questioner, and Reporter use Qwen3-8B. The example commands assume local weights at `models/qwen3-8b`.
 
+Configure the frozen Retriever with three environment variables: `MEDDR_RETRIEVER_MODEL` for its model identifier, `MEDDR_RETRIEVER_ENDPOINT` for the complete HTTPS chat-completions endpoint, and `MEDDR_RETRIEVER_KEY` for authentication. The endpoint must accept JSON chat-completions requests and return `choices[0].message.content`. Keep credentials outside version control. Patient-specific questions are sent to this service; use a deployment approved for the data being processed.
+
 ### Step 2. Preprocess EHR Data
 
 The preprocessing script supports MIMIC-III and adapts a workflow similar to GiantMed: diagnosis/procedure encoding, NDC-to-RxCUI-to-ATC-3 mapping, molecular filtering, and DDI construction. Obtain authorized access to the required data and place the following files in `data/raw/`:
@@ -100,9 +108,20 @@ DDI constraints and DDI-rate computation use `data/ready/ddi_A_final.pkl`, with 
 
 Visits are ordered by the earliest retained prescription time. Patients must have at least two visits after modality filtering. Vocabulary construction and frequency filtering use the full cohort; model fitting uses only the training split. Processed records omit source patient and admission identifiers. MIMIC-IV raw tables require a separate adapter to this processed schema.
 
-### Step 3. Train SafeDrug and Export Probabilities
+### Step 3. Generate Deep-Model Probabilities
 
-SafeDrug combines longitudinal diagnosis/procedure encoders with global molecular message passing and a local drug-substructure representation. Training uses BCE, multilabel-margin, and adaptive DDI losses.
+Select a deep medication recommender, such as SafeDrug, MoleRec, DEPOT, or MedAlign, and run visit-level inference with a frozen checkpoint. MedDR uses the resulting probabilities to identify boundary medications; the downstream agent pipeline is independent of the recommender architecture.
+
+Use the same medication vocabulary, patient splits, and visit order throughout preprocessing, deep-model inference, and MedDR. Export one probability for every medication, not only the predicted medication set. Save the training and test predictions as `outputs/base_model/train_predictions.json` and `outputs/base_model/test_predictions.json`.
+
+Prediction files use the patient/visit organization of GiantMed: each patient has a positional `patient_id` and a `visits` list; each visit has a positional `visit_id` and `predicted` pairs of `[medication_id, probability]`. Medication IDs index `voc_final.pkl`. Pair order may vary, but IDs must uniquely cover the full medication vocabulary. Target labels are read separately from the training records.
+
+The following example uses the included SafeDrug implementation. Other recommenders require their own training/inference implementation and an export in the same format.
+
+<details>
+<summary><strong>SafeDrug example</strong></summary>
+
+Train SafeDrug and select the checkpoint with the highest validation Jaccard:
 
 ```bash
 python -m Deep_Model.main_SafeDrug \
@@ -111,7 +130,9 @@ python -m Deep_Model.main_SafeDrug \
   --checkpoint outputs/safedrug/best.pt
 ```
 
-Training defaults to Adam, an embedding dimension of 64, and batches of 32 visits. Set the execution device with `--device`. The checkpoint with the highest validation Jaccard is saved.
+Training defaults to Adam, an embedding dimension of 64, and batches of 32 visits. Set the execution device with `--device`.
+
+Export probabilities from the selected checkpoint:
 
 ```bash
 for split in train test; do
@@ -120,30 +141,34 @@ for split in train test; do
     --data-dir data/ready \
     --checkpoint outputs/safedrug/best.pt \
     --split "$split" \
-    --output "outputs/safedrug/${split}_predictions.json"
+    --output "outputs/base_model/${split}_predictions.json"
 done
 ```
 
-Predictions contain a `patient_id` and `visits` list for each patient. Each visit contains a `visit_id` and `predicted` pairs of medication index and probability for the complete vocabulary. Patient and visit indices are positional within the processed split. Target labels are omitted.
+</details>
 
-### Step 4. Prepare Personalized Research Inputs
+### Step 4. Prepare Visit Context and DDI Constraints
 
-Create `data/ready/medication_names.json` as a JSON object mapping each ATC-3 vocabulary code to a unique readable medication-class name.
+Convert the frozen probabilities into MedDR inputs using the processed records, vocabularies, and clinical-name mappings from Step 2. A medication-name mapping is also required at `data/ready/medication_names.json`: its JSON keys are ATC-3 vocabulary codes, and its values are unique readable medication-class names. It must cover the complete medication vocabulary.
 
 ```bash
 for split in train test; do
   python LLM/prepare_inputs.py \
     --data-dir data/ready \
-    --predictions "outputs/safedrug/${split}_predictions.json" \
+    --predictions "outputs/base_model/${split}_predictions.json" \
     --medication-names data/ready/medication_names.json \
     --split "$split" \
     --output "data/LLM-data/${split}.jsonl"
 done
 ```
 
-The converter uses only earlier same-patient visits for history. Similar visits come only from training patients: it excludes the target patient, ranks diagnosis-set Jaccard similarity, keeps the best visit per other patient, and selects up to three. Binary target labels are included only for the training split. The current visit exposes diagnoses and procedures, never its medication outcomes. Labels and positional patient/sample keys are not rendered into agent prompts.
+`prepare_inputs.py` joins each visit's probabilities with its current diagnoses/procedures and earlier same-patient history. It retrieves similar visits from training patients by diagnosis-set Jaccard similarity, excludes the target patient, and keeps up to three visits from distinct patients. The resulting JSONL files are the inputs to the Planner and the online research pipeline.
 
-Visits without boundary medications are counted as `baseline_only_visits` and omitted from research inputs. Full-cohort evaluation combines MedDR predictions for research visits with unmodified SafeDrug decisions at threshold `0.5` for baseline-only visits. DDI constraints are derived from the aligned matrix.
+Only training JSONL files include target medication labels. The current visit contains no medication outcomes, and agent prompts omit labels and patient/sample keys. During validation, training, and inference, the loader derives DDI pairs for boundary and confidently accepted medications from `ddi_A_final.pkl`.
+
+Visits without boundary medications are counted as `baseline_only_visits` and omitted from research inputs. Full-cohort evaluation combines MedDR predictions for research visits with the chosen recommender's unmodified decisions at threshold `0.5` for baseline-only visits.
+
+Validate the prepared inputs:
 
 ```bash
 python -m meddr.validate_data \
@@ -157,15 +182,7 @@ python -m meddr.validate_data \
 
 ### Step 5. Run Online Research and GRPO Training
 
-Configure the frozen Retriever through the runtime environment:
-
-| Variable | Purpose |
-| --- | --- |
-| `MEDDR_RETRIEVER_KEY` | Runtime authentication secret |
-| `MEDDR_RETRIEVER_ENDPOINT` | Complete HTTPS chat-completions endpoint |
-| `MEDDR_RETRIEVER_MODEL` | Runtime model identifier |
-
-The Retriever sends JSON chat-completions requests and reads `choices[0].message.content`. Credentials and endpoints must be supplied at runtime and excluded from version control. Patient-specific questions are sent to the configured service; use a deployment approved for the data being processed.
+Run the Planner-Questioner-Retriever-Reporter pipeline on the prepared training visits and update the Questioner with online GRPO:
 
 ```bash
 bash LLM/train_online.sh \
