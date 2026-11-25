@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meddr"
+version = "1.0.0"
+description = "Causality-guided deep research for personalized medication recommendation"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "accelerate>=0.34",
+  "numpy>=1.24",
+  "dill>=0.3.4",
+  "pandas>=1.5",
+  "rdkit>=2023.9",
+  "scikit-learn>=1.3",
+  "peft>=0.14",
+  "safetensors>=0.4",
+  "torch>=2.1",
+  "transformers>=4.51",
+]
+
+[project.scripts]
+meddr-train = "meddr.train:main"
+meddr-infer = "meddr.infer:main"
+meddr-validate-data = "meddr.validate_data:main"
+
+[tool.setuptools]
+packages = ["meddr", "Deep_Model", "Deep_Model.model"]
+
+[tool.setuptools.package-dir]
+meddr = "LLM/meddr"
+Deep_Model = "Deep_Model"
